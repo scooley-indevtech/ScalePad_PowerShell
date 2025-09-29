@@ -7,7 +7,7 @@ param(
     [string]$DisplayName = "Lifecycle Manager Microsoft 365 Single Tenant Integration",
     
     [Parameter(Mandatory = $false)]
-    [int]$ClientSecretExpiryMonths = 6,
+    [int]$ClientSecretExpiryMonths = 24,
     
     [Parameter(Mandatory = $false)]
     [string]$RedirectUri = "https://app.scalepad.com/account/integration/oauth"
@@ -229,14 +229,24 @@ try {
     
     Write-Host "Redirect URI: $RedirectUri"
 
+    # Get organization details for export file naming
+    $tenantId = (Get-MgContext).TenantId
+    $organization = Get-MgOrganization
+    $primaryDomain = $organization.VerifiedDomains | Where-Object { $_.IsDefault -eq $true } | Select-Object -ExpandProperty Name
+    
+    if (!$primaryDomain) {
+        $primaryDomain = $tenantId
+    }
+
     # Create output object for programmatic use
     $result = @{
         ApplicationId = $app.AppId
-        TenantId = (Get-MgContext).TenantId
+        TenantId = $tenantId
         DisplayName = $DisplayName
         RedirectUri = $RedirectUri
         IsNewApp = $isNewApp
         ServicePrincipalId = $servicePrincipal.Id
+        PrimaryDomain = $primaryDomain
     }
     
     if ($clientSecret) {
@@ -244,6 +254,59 @@ try {
         $result.ClientSecretId = $clientSecret.KeyId
         $result.ClientSecretExpires = $clientSecret.EndDateTime
     }
+
+    # Export credentials to text file if we have a client secret
+    if ($clientSecret) {
+        $exportFileName = "$primaryDomain-LM-Credentials.txt"
+        $exportPath = Join-Path (Get-Location) $exportFileName
+        
+        $exportContent = @"
+Lifecycle Manager Microsoft 365 Integration Credentials
+========================================================
+Organization: $primaryDomain
+Created: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+
+REQUIRED CREDENTIALS FOR LIFECYCLE MANAGER:
+-------------------------------------------
+Tenant ID:           $tenantId
+Application ID:      $($app.AppId)
+Client Secret:       $($clientSecret.SecretText)
+
+Client Secret Expires: $($clientSecret.EndDateTime)
+
+IMPORTANT: Store this file securely and delete it after 
+entering the credentials into Lifecycle Manager.
+"@
+        
+        try {
+            $exportContent | Out-File -FilePath $exportPath -Encoding UTF8
+            Write-Host "`n✓ Credentials exported to: $exportFileName" -ForegroundColor Green
+        } catch {
+            Write-Warning "Could not export credentials to file: $($_.Exception.Message)"
+        }
+    }
+
+    # Display key credentials at the end for easy copy/paste
+    Write-Host "`n" -NoNewline
+    Write-Host "================================================================" -ForegroundColor Cyan
+    Write-Host "  LIFECYCLE MANAGER INTEGRATION CREDENTIALS" -ForegroundColor Cyan
+    Write-Host "================================================================" -ForegroundColor Cyan
+    Write-Host "Organization:      " -NoNewline -ForegroundColor White
+    Write-Host $primaryDomain -ForegroundColor Yellow
+    Write-Host "Tenant ID:         " -NoNewline -ForegroundColor White
+    Write-Host $tenantId -ForegroundColor Yellow
+    Write-Host "Application ID:    " -NoNewline -ForegroundColor White
+    Write-Host $app.AppId -ForegroundColor Yellow
+    
+    if ($clientSecret) {
+        Write-Host "Client Secret:     " -NoNewline -ForegroundColor White
+        Write-Host $clientSecret.SecretText -ForegroundColor Yellow
+    } else {
+        Write-Host "Client Secret:     " -NoNewline -ForegroundColor White
+        Write-Host "(Use existing secret from Azure portal)" -ForegroundColor Yellow
+    }
+    
+    Write-Host "================================================================" -ForegroundColor Cyan
 
     return $result
 
