@@ -23,10 +23,18 @@ Import-Module Microsoft.Graph.Applications
 Import-Module Microsoft.Graph.Authentication
 
 try {
+    # Disconnect any existing sessions to ensure fresh login
+    try {
+        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        # Ignore errors if not connected
+    }
+
     # Connect to Microsoft Graph with required permissions
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Green
     Write-Host "You will be prompted to sign in with Global Administrator credentials..." -ForegroundColor Yellow
-    Connect-MgGraph -Scopes "Application.ReadWrite.All", "Directory.ReadWrite.All"
+    Write-Host "Please ensure you select the correct tenant/account for this integration." -ForegroundColor Cyan
+    Connect-MgGraph -Scopes "Application.ReadWrite.All", "Directory.ReadWrite.All", "AppRoleAssignment.ReadWrite.All"
 
     # Define required API permissions
     $requiredPermissions = @(
@@ -80,42 +88,86 @@ try {
     Write-Host "Client Secret ID: $($clientSecret.KeyId)" -ForegroundColor Cyan
     Write-Host "Client Secret Expires: $($clientSecret.EndDateTime)" -ForegroundColor Cyan
 
-    # Grant admin consent (requires additional permissions)
-    Write-Host "`nAttempting to grant admin consent..." -ForegroundColor Green
+    # Create service principal and grant admin consent
+    Write-Host "`nCreating service principal..." -ForegroundColor Green
     
     try {
-        # Create service principal for the app
         $servicePrincipal = New-MgServicePrincipal -AppId $app.AppId
+        Write-Host "Service principal created successfully!" -ForegroundColor Green
         
-        # Grant admin consent for each permission
-        foreach ($permission in $requiredPermissions[0].ResourceAccess) {
-            $consentParams = @{
-                ClientId = $servicePrincipal.Id
-                ConsentType = "AllPrincipals"
-                ResourceId = (Get-MgServicePrincipal -Filter "appId eq '00000003-0000-0000-c000-000000000000'").Id
-                Scope = $permission.Id
+        # Grant admin consent for Microsoft Graph permissions
+        Write-Host "`nGranting admin consent for Microsoft Graph permissions..." -ForegroundColor Yellow
+        
+        # Get the Microsoft Graph service principal
+        $graphServicePrincipal = Get-MgServicePrincipal -Filter "AppId eq '00000003-0000-0000-c000-000000000000'"
+        
+        if ($graphServicePrincipal) {
+            $consentSuccessCount = 0
+            $consentFailCount = 0
+            
+            # Grant consent for each application permission (Role type)
+            foreach ($permission in $requiredPermissions[0].ResourceAccess | Where-Object { $_.Type -eq "Role" }) {
+                $permissionId = $permission.Id
+                
+                # Find the app role in Microsoft Graph service principal
+                $appRole = $graphServicePrincipal.AppRoles | Where-Object { $_.Id -eq $permissionId }
+                
+                if ($appRole) {
+                    Write-Host "  Granting consent for: $($appRole.Value)" -ForegroundColor White
+                    
+                    # Check if this permission is already granted
+                    $existingAssignment = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $servicePrincipal.Id | 
+                        Where-Object { $_.AppRoleId -eq $permissionId -and $_.ResourceId -eq $graphServicePrincipal.Id }
+                    
+                    if ($existingAssignment) {
+                        Write-Host "    ✓ Already granted" -ForegroundColor Green
+                        $consentSuccessCount++
+                    } else {
+                        try {
+                            # Grant the app role assignment (admin consent)
+                            $assignment = @{
+                                PrincipalId = $servicePrincipal.Id
+                                ResourceId = $graphServicePrincipal.Id
+                                AppRoleId = $permissionId
+                            }
+                            
+                            New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $servicePrincipal.Id -BodyParameter $assignment | Out-Null
+                            Write-Host "    ✓ Granted successfully" -ForegroundColor Green
+                            $consentSuccessCount++
+                        } catch {
+                            Write-Host "    ✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
+                            $consentFailCount++
+                        }
+                    }
+                } else {
+                    Write-Host "    ✗ App role not found for permission ID: $permissionId" -ForegroundColor Red
+                    $consentFailCount++
+                }
             }
             
-            try {
-                New-MgOauth2PermissionGrant @consentParams | Out-Null
+            Write-Host "`nAdmin consent summary:" -ForegroundColor Cyan
+            Write-Host "  ✓ Successfully granted: $consentSuccessCount permissions" -ForegroundColor Green
+            if ($consentFailCount -gt 0) {
+                Write-Host "  ✗ Failed to grant: $consentFailCount permissions" -ForegroundColor Red
+                Write-Host "  Please manually grant any failed permissions in the Azure portal." -ForegroundColor Yellow
+            } else {
+                Write-Host "  🎉 All permissions granted successfully!" -ForegroundColor Green
             }
-            catch {
-                Write-Warning "Could not automatically grant consent for permission $($permission.Id): $($_.Exception.Message)"
-            }
+        } else {
+            Write-Warning "Could not find Microsoft Graph service principal for admin consent"
+            Write-Host "Please manually grant admin consent in the Azure portal." -ForegroundColor Yellow
         }
-        
-        Write-Host "Admin consent process completed. Please verify in Azure portal." -ForegroundColor Green
     }
     catch {
-        Write-Warning "Could not automatically grant admin consent: $($_.Exception.Message)"
-        Write-Host "Please manually grant admin consent in the Azure portal." -ForegroundColor Yellow
+        Write-Warning "Could not create service principal or grant admin consent: $($_.Exception.Message)"
+        Write-Host "You may need to create it manually in the Azure portal and grant admin consent." -ForegroundColor Yellow
     }
 
     # Output summary
     Write-Host "`n=== INTEGRATION SUMMARY ===" -ForegroundColor Magenta
     Write-Host "Application Name: $DisplayName"
     Write-Host "Application (Client) ID: $($app.AppId)"
-    Write-Host "Directory (Tenant) ID: $((Get-MsgContext).TenantId)"
+    Write-Host "Directory (Tenant) ID: $((Get-MgContext).TenantId)"
     Write-Host "Client Secret Value: $($clientSecret.SecretText)"
     Write-Host "Client Secret Expires: $($clientSecret.EndDateTime)"
     Write-Host "Redirect URI: $RedirectUri"
