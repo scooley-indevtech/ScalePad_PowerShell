@@ -127,12 +127,22 @@ try {
         Write-Host "If you need a new client secret, create one manually in the Azure portal." -ForegroundColor Cyan
     }
 
-    # Create service principal and grant admin consent
-    Write-Host "`nCreating service principal..." -ForegroundColor Green
+    # Create or find service principal and grant admin consent
+    Write-Host "`nChecking for existing service principal..." -ForegroundColor Green
     
     try {
-        $servicePrincipal = New-MgServicePrincipal -AppId $app.AppId
-        Write-Host "Service principal created successfully!" -ForegroundColor Green
+        # Check if service principal already exists
+        $servicePrincipal = Get-MgServicePrincipal -Filter "AppId eq '$($app.AppId)'"
+        
+        if ($servicePrincipal) {
+            Write-Host "Found existing service principal!" -ForegroundColor Yellow
+            Write-Host "Service Principal ID: $($servicePrincipal.Id)" -ForegroundColor Cyan
+        } else {
+            Write-Host "Creating new service principal..." -ForegroundColor Green
+            $servicePrincipal = New-MgServicePrincipal -AppId $app.AppId
+            Write-Host "Service principal created successfully!" -ForegroundColor Green
+            Write-Host "Service Principal ID: $($servicePrincipal.Id)" -ForegroundColor Cyan
+        }
         
         # Grant admin consent for Microsoft Graph permissions
         Write-Host "`nGranting admin consent for Microsoft Graph permissions..." -ForegroundColor Yellow
@@ -207,21 +217,32 @@ try {
     Write-Host "Application Name: $DisplayName"
     Write-Host "Application (Client) ID: $($app.AppId)"
     Write-Host "Directory (Tenant) ID: $((Get-MgContext).TenantId)"
-    Write-Host "Client Secret Value: $($clientSecret.SecretText)"
-    Write-Host "Client Secret Expires: $($clientSecret.EndDateTime)"
+    
+    if ($clientSecret) {
+        Write-Host "Client Secret Value: $($clientSecret.SecretText)"
+        Write-Host "Client Secret Expires: $($clientSecret.EndDateTime)"
+        Write-Host "`nIMPORTANT: Save the Client Secret Value in a secure location!"
+        Write-Host "This value cannot be retrieved again once this session ends."
+    } else {
+        Write-Host "Client Secret: Use existing secret or create new one in Azure portal"
+    }
+    
     Write-Host "Redirect URI: $RedirectUri"
-    Write-Host "`nIMPORTANT: Save the Client Secret Value in a secure location!"
-    Write-Host "This value cannot be retrieved again once this session ends."
 
     # Create output object for programmatic use
     $result = @{
         ApplicationId = $app.AppId
         TenantId = (Get-MgContext).TenantId
-        ClientSecretValue = $clientSecret.SecretText
-        ClientSecretId = $clientSecret.KeyId
-        ClientSecretExpires = $clientSecret.EndDateTime
         DisplayName = $DisplayName
         RedirectUri = $RedirectUri
+        IsNewApp = $isNewApp
+        ServicePrincipalId = $servicePrincipal.Id
+    }
+    
+    if ($clientSecret) {
+        $result.ClientSecretValue = $clientSecret.SecretText
+        $result.ClientSecretId = $clientSecret.KeyId
+        $result.ClientSecretExpires = $clientSecret.EndDateTime
     }
 
     return $result
